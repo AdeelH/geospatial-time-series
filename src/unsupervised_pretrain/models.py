@@ -28,8 +28,6 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import copy
-
 import torch
 import torch.nn.functional as F
 from torchvision import models
@@ -54,26 +52,27 @@ class SeriesModel(torch.nn.Module):
         super(SeriesModel, self).__init__()
         self.attn_linear2 = torch.nn.Linear(D2, 1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        embeddings = self.forward_embeddings(x)  # (batch, series, E)
+        attn_weights = self.embeddings_to_attention(embeddings)  # (batch, series, 1)
+        weighted_embeddings = embeddings * attn_weights  # (batch, series, E)
+        out = weighted_embeddings.sum(dim=1)  # (batch, E)
+        return out
+
+    def forward_embeddings(self, x: torch.Tensor) -> torch.Tensor:
         (batch, series, channels, height, width) = x.shape
-        shape = [-1, channels, height, width]
-        x = x.reshape(*shape)  # (batch * series, channels, height, width)
+        x = x.reshape(-1, channels, height, width)  # (batch * series, channels, height, width)
         x = self.net(x).squeeze()  # (batch * series, E)
-
-        attn_weights = self.classifier(x)  # (batch * series, D1)
-        attn_weights = self.attn_linear1(attn_weights)  # (batch * series, D2)
-        attn_weights = F.relu(attn_weights)
-        attn_weights = self.attn_linear2(attn_weights)  # (batch * series, 1)
-        shape = [batch, series, 1]
-        attn_weights = attn_weights.reshape(*shape)  # (batch, series, 1)
-        attn_weights = F.softmax(attn_weights, dim=1)
-
-        shape = list(x.shape)
-        shape = [batch, series] + shape[1:]
-        x = x.reshape(*shape)  # (batch, series, E)
-        x = x * attn_weights
-        x = torch.sum(x, dim=1)  # (batch, E)
+        x = x.reshape(batch, series, -1)
         return x
+
+    def embeddings_to_attention(self, x: torch.Tensor) -> torch.Tensor:
+        attn_weights = self.classifier(x)  # (batch, series, D1)
+        attn_weights = self.attn_linear1(attn_weights)  # (batch, series, D2)
+        attn_weights = F.relu(attn_weights)
+        attn_weights = self.attn_linear2(attn_weights)  # (batch, series, 1)
+        attn_weights = F.softmax(attn_weights, dim=1)
+        return attn_weights
 
 
 class SeriesEfficientNetb0(SeriesModel):
